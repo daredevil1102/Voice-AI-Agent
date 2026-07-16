@@ -1,0 +1,143 @@
+{
+  "agent_name": "Aarohan Clinic Receptionist",
+  "voice_id": "openai-Bilingual-Hindi-English",
+  "llm_model": "gpt-4o",
+  "temperature": 0.1,
+  "tools": [
+    {
+      "name": "identify_caller",
+      "description": "Checks the caller's phone number to identify if they are a new patient, returning patient, share a family line, or are recovering from a dropped call.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "phone_number": {
+            "type": "string",
+            "description": "The caller's phone number. If not provided, the backend will attempt to detect it from call metadata headers."
+          }
+        }
+      }
+    },
+    {
+      "name": "get_practitioners",
+      "description": "Lists all doctors, their specialties, and clinic branch locations. Use this for general queries or triage.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "specialty": {
+            "type": "string",
+            "description": "Optional specialty to filter by (e.g., 'General Medicine', 'Pediatrics', 'Dermatology')."
+          },
+          "clinic_id": {
+            "type": "integer",
+            "description": "Optional clinic branch ID to filter by (1 for Downtown, 2 for Westside)."
+          }
+        }
+      }
+    },
+    {
+      "name": "check_availability",
+      "description": "Checks if a specific doctor/practitioner is available at a given date and time.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "practitioner_id": {
+            "type": "integer",
+            "description": "The unique ID of the doctor/practitioner."
+          },
+          "start_time": {
+            "type": "string",
+            "description": "The requested ISO 8601 start time (e.g., '2026-12-13T13:00:00')."
+          }
+        },
+        "required": ["practitioner_id", "start_time"]
+      }
+    },
+    {
+      "name": "search_earliest_slot",
+      "description": "Searches across all doctors and clinic branches to find the earliest available 30-minute appointment slot.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "specialty": {
+            "type": "string",
+            "description": "Optional specialty to filter by (e.g., 'General Medicine')."
+          },
+          "clinic_id": {
+            "type": "integer",
+            "description": "Optional clinic branch ID to filter by."
+          },
+          "start_from": {
+            "type": "string",
+            "description": "Optional ISO 8601 start time to search from (defaults to current time)."
+          }
+        }
+      }
+    },
+    {
+      "name": "book_appointment",
+      "description": "Books a new appointment. You must capture the caller's first and last name before calling this.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "first_name": {
+            "type": "string",
+            "description": "The patient's first name."
+          },
+          "last_name": {
+            "type": "string",
+            "description": "The patient's last name."
+          },
+          "practitioner_id": {
+            "type": "integer",
+            "description": "The ID of the doctor."
+          },
+          "clinic_id": {
+            "type": "integer",
+            "description": "The ID of the clinic branch."
+          },
+          "start_time": {
+            "type": "string",
+            "description": "The ISO 8601 start time of the slot."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "description": "A unique UUID or string generated per booking attempt to prevent double submission."
+          }
+        },
+        "required": ["first_name", "last_name", "practitioner_id", "clinic_id", "start_time"]
+      }
+    },
+    {
+      "name": "reschedule_appointment",
+      "description": "Reschedules an existing appointment to a new date and time. Checks if a fee applies.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "appointment_id": {
+            "type": "integer",
+            "description": "The ID of the appointment to reschedule."
+          },
+          "new_start_time": {
+            "type": "string",
+            "description": "The new requested ISO 8601 start time."
+          }
+        },
+        "required": ["appointment_id", "new_start_time"]
+      }
+    },
+    {
+      "name": "cancel_appointment",
+      "description": "Cancels an existing appointment. Checks if a fee applies.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "appointment_id": {
+            "type": "integer",
+            "description": "The ID of the appointment to cancel."
+          }
+        },
+        "required": ["appointment_id"]
+      }
+    }
+  ]
+}
