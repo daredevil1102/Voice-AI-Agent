@@ -98,6 +98,10 @@ async def get_call_metadata(request: Request, payload: Optional[Any] = None, db:
     call_id = "unknown_call"
     phone_number = "unknown_phone"
     
+    # Log all headers for debugging (only first call, to trace what Retell actually sends)
+    header_dict = dict(request.headers)
+    logger.info(f"[get_call_metadata] Headers received: {header_dict}")
+    
     # 1. Try to extract from payload object (Pydantic model)
     if payload:
         if hasattr(payload, "call") and payload.call:
@@ -109,7 +113,7 @@ async def get_call_metadata(request: Request, payload: Optional[Any] = None, db:
                 call_id = call_data.get("call_id", call_id) or call_id
                 phone_number = call_data.get("from_number", phone_number) or phone_number
         
-        # Check for phone number inside args if still unknown
+        # Check for phone number directly in payload fields or args
         if phone_number == "unknown_phone":
             if hasattr(payload, "phone_number") and payload.phone_number:
                 phone_number = payload.phone_number
@@ -117,22 +121,44 @@ async def get_call_metadata(request: Request, payload: Optional[Any] = None, db:
                 phone_number = payload.args.get("phone_number", phone_number)
             elif isinstance(payload, dict):
                 phone_number = payload.get("phone_number") or payload.get("args", {}).get("phone_number", phone_number)
+
+    # 2. Extract call_id from headers — Retell sends it as 'x-retell-call-id' on all tool POST requests
+    # Check all common header name variants (Retell header names are lowercased by Starlette)
+    for header_key in ["x-retell-call-id", "x-call-id", "retell-call-id", "call-id"]:
+        val = request.headers.get(header_key)
+        if val:
+            call_id = val
+            logger.info(f"[get_call_metadata] call_id from header '{header_key}': {call_id}")
+            break
         
-    # 2. Fallback to headers (case-insensitive check)
-    h_call_id = request.headers.get("x-retell-call-id") or request.headers.get("x-call-id") or request.headers.get("X-Call-Id")
-    if h_call_id:
-        call_id = h_call_id
+    # Extract phone from header fallback
+    for header_key in ["x-retell-from-number", "x-phone-number", "x-from-number", "from-number"]:
+        val = request.headers.get(header_key)
+        if val:
+            phone_number = val
+            logger.info(f"[get_call_metadata] phone from header '{header_key}': {phone_number}")
+            break
         
-    h_phone = request.headers.get("x-phone-number") or request.headers.get("X-Phone-Number")
-    if h_phone:
-        phone_number = h_phone
-        
-    # 3. Fallback to DB session lookup if phone number is not sent in headers
-    if phone_number == "unknown_phone" and call_id != "unknown_call" and db:
-        session = db.query(CallSession).filter(CallSession.call_id == call_id).first()
-        if session and session.phone_number:
-            phone_number = session.phone_number
+    # 3. DB session lookup — most reliable fallback: webhook stores phone against call_id at call_started
+    if (phone_number == "unknown_phone" or call_id == "unknown_call") and db:
+        # Try to find session by call_id first
+        if call_id != "unknown_call":
+            session = db.query(CallSession).filter(CallSession.call_id == call_id).first()
+            if session:
+                if phone_number == "unknown_phone" and session.phone_number:
+                    phone_number = session.phone_number
+                    logger.info(f"[get_call_metadata] phone resolved from DB session by call_id: {phone_number}")
+        # If call_id also unknown, check all active sessions (best effort)
+        if call_id == "unknown_call" and phone_number == "unknown_phone":
+            recent = db.query(CallSession).filter(
+                CallSession.is_active == 1
+            ).order_by(CallSession.updated_at.desc()).first()
+            if recent:
+                call_id = recent.call_id
+                phone_number = recent.phone_number
+                logger.info(f"[get_call_metadata] Fallback: using most recent active session call_id={call_id} phone={phone_number}")
             
+    logger.info(f"[get_call_metadata] Resolved call_id={call_id} phone_number={phone_number}")
     return call_id, phone_number
 
 # Webhook for Retell events
