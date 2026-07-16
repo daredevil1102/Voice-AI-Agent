@@ -29,6 +29,10 @@ app.add_middleware(
 class IdentifyCallerRequest(BaseModel):
     phone_number: Optional[str] = None
 
+class GetPractitionersRequest(BaseModel):
+    specialty: Optional[str] = None
+    clinic_id: Optional[int] = None
+
 class CheckAvailabilityRequest(BaseModel):
     practitioner_id: int
     start_time: str
@@ -227,6 +231,25 @@ async def identify_caller(
 @app.get("/practitioners")
 def list_practitioners(specialty: Optional[str] = None, clinic_id: Optional[int] = None, db: Session = Depends(get_db)):
     """List practitioners filtered by specialty or clinic."""
+    practitioners = services.get_practitioners_by_specialty(db, specialty, clinic_id)
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "specialty": p.specialty,
+            "clinic_id": p.clinic_id,
+            "clinic_name": p.clinic.name,
+            "clinic_location": p.clinic.location
+        }
+        for p in practitioners
+    ]
+
+
+@app.post("/tools/get_practitioners")
+def get_practitioners_tool(payload: Optional[GetPractitionersRequest] = None, db: Session = Depends(get_db)):
+    """List practitioners filtered by specialty or clinic for Retell custom function."""
+    specialty = payload.specialty if payload else None
+    clinic_id = payload.clinic_id if payload else None
     practitioners = services.get_practitioners_by_specialty(db, specialty, clinic_id)
     return [
         {
