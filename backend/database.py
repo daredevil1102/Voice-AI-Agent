@@ -1,5 +1,6 @@
 import os
 import datetime
+import pytz
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
@@ -7,6 +8,12 @@ from dotenv import load_dotenv
 from .models import Base, Clinic, Practitioner, Patient, Appointment, CallSession
 
 load_dotenv()
+
+CLINIC_TIMEZONE = pytz.timezone("Asia/Kolkata")
+
+def get_local_now():
+    """Returns current IST time as a naive datetime for consistent DB comparisons."""
+    return datetime.datetime.now(CLINIC_TIMEZONE).replace(tzinfo=None)
 
 # Determine database URL. If not provided, default to a SQLite file in the workspace
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./clinic.db")
@@ -129,7 +136,7 @@ def seed_data():
         db.commit()
 
         # Clean up any conflicting seeded appointment at tomorrow 10:00 AM from previous runs to allow the harness to pass
-        now = datetime.datetime.utcnow()
+        now = get_local_now()
         tomorrow_date = (now + datetime.timedelta(days=1)).date()
         old_harness_appt_time = datetime.datetime.combine(tomorrow_date, datetime.time(10, 0))
         conflicting_seeded_appt = db.query(Appointment).filter(

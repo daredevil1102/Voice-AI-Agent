@@ -1,4 +1,5 @@
 import datetime
+import pytz
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from .models import Clinic, Practitioner, Patient, Appointment, CallSession
@@ -9,6 +10,13 @@ CLINIC_OPEN_HOUR = 9  # 9:00 AM
 CLINIC_CLOSE_HOUR = 17 # 5:00 PM
 FEE_POLICY_WINDOW_HOURS = 24
 CANCELLATION_FEE = "$25" # Standard fee for late reschedule/cancel
+
+# Timezone: clinic operates in IST (Indian Standard Time, UTC+5:30)
+CLINIC_TIMEZONE = pytz.timezone("Asia/Kolkata")
+
+def get_local_now() -> datetime.datetime:
+    """Returns the current local (IST) datetime as a naive datetime for DB comparisons."""
+    return datetime.datetime.now(CLINIC_TIMEZONE).replace(tzinfo=None)
 
 def get_clinic_working_hours(date: datetime.date):
     """Returns the start and end of working hours for a given date."""
@@ -38,7 +46,7 @@ def check_practitioner_availability(db: Session, practitioner_id: int, start_tim
         return False, "Requested time is outside clinic working hours (9:00 AM - 5:00 PM)."
         
     # 2. Check future time (can't book in the past)
-    if start_time < datetime.datetime.utcnow():
+    if start_time < get_local_now():
         return False, "Cannot book appointments in the past."
 
     # 3. Check overlaps
@@ -63,7 +71,7 @@ def find_earliest_available_slot(db: Session, specialty: str = None, clinic_id: 
     Returns the practitioner, clinic, and slot start time.
     """
     if start_from is None:
-        start_from = datetime.datetime.utcnow()
+        start_from = get_local_now()
     
     # Round up start_from to the next 30-minute interval
     minutes = (start_from.minute // 30 + 1) * 30
@@ -109,7 +117,7 @@ def check_reschedule_fee_applies(appointment: Appointment) -> tuple[bool, str]:
     Checks if a cancellation or reschedule fee applies.
     Fee applies if changes are within 24 hours of the appointment start.
     """
-    now = datetime.datetime.utcnow()
+    now = get_local_now()
     time_diff = appointment.start_time - now
     if time_diff < datetime.timedelta(hours=FEE_POLICY_WINDOW_HOURS):
         return True, CANCELLATION_FEE

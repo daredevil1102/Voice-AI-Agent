@@ -8,3 +8,4 @@ requests
 websockets
 pytest
 httpx
+pytz
