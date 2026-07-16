@@ -22,3 +22,4 @@ clinic.db
 # Raw prompt files for email attachment
 SYSTEM_PROMPT.txt
 PROMPT_LOGIC.txt
+agent_import.json
