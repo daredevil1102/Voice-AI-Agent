@@ -55,6 +55,7 @@ All 7 tools are documented in the prompt so the LLM knows exactly what parameter
 - **Input:** `practitioner_id` (int), `start_time` (ISO 8601)
 - **Response:** `{is_available, practitioner_name, reason}`
 - If `is_available: false` → agent apologises and calls `search_earliest_slot`
+- **CRITICAL:** `check_availability` only confirms slot status — it does **not** create a booking. After the caller confirms the slot, the agent **must** still call `book_appointment`. Saying "I'll book that" without executing the tool leaves no record in the database.
 
 ### `search_earliest_slot`
 - **Trigger:** Caller wants "earliest" slot, or `check_availability` fails
@@ -67,6 +68,7 @@ All 7 tools are documented in the prompt so the LLM knows exactly what parameter
 - **Input:** `first_name`, `last_name`, `practitioner_id`, `clinic_id`, `start_time` (ISO 8601)
 - **Response:** `{success, appointment_id, patient_name, practitioner_name, clinic_name, start_time, message}`
 - If `success: false` → agent apologises and calls `search_earliest_slot` for an alternative
+- **CRITICAL:** The agent must **never call `end_call`** before this tool has returned `success: true`. Prompt rules 9 and 10 explicitly enforce this.
 
 ### `reschedule_appointment`
 - **Trigger:** Caller wants to move an existing appointment
@@ -82,31 +84,61 @@ All 7 tools are documented in the prompt so the LLM knows exactly what parameter
 
 ---
 
-## 3. Payload Structure Fix (`args` wrapping)
+## 3. Phone Number Extraction: How `get_call_metadata()` Works
 
-Retell AI wraps all custom tool arguments inside a nested `args` key in the HTTP POST body:
+### What Retell actually sends
+Retell's architecture separates two types of HTTP requests to the backend:
 
+| Request type | Endpoint | Contains `call` object? | Contains `from_number`? |
+|---|---|---|---|
+| Call lifecycle events | `POST /webhook` | ✅ Yes | ✅ Yes |
+| Custom tool calls | `POST /tools/*` | ❌ No | ❌ No |
+
+This means **tool POST bodies never contain a `call` object or `from_number`**. The assumption in the original code (read `payload.call.from_number`) silently failed on every live tool call, causing `phone_number = "unknown_phone"` and triggering the "I could not detect your number" error message.
+
+### The actual Retell tool POST body shape
 ```json
 {
-  "call": {
-    "call_id": "call_abc123",
-    "from_number": "+15550199"
-  },
   "args": {
     "practitioner_id": 1,
     "start_time": "2025-08-01T10:00:00"
-  }
+  },
+  "execution_message": "Sure, one moment..."
 }
 ```
 
-All FastAPI request models include an `Optional[Dict[str, Any]] args` field. Every endpoint handler reads top-level fields first, then falls back to `payload.args` if they are `None`. This makes the backend compatible with both Retell's live format and the local evaluation harness which posts flat JSON.
+> The `call` object **only** appears in `/webhook` events (`call_started`, `call_ended`, `call_analyzed`). The webhook fires first and stores `call_id → phone_number` in the `CallSession` table before any tool is ever invoked.
 
-The `get_call_metadata()` helper extracts the phone number in this priority order:
-1. `payload.call.from_number` (Retell live)
-2. `payload.phone_number` (flat/harness)
-3. `payload.args.phone_number` (nested harness variant)
-4. Request headers (`x-retell-call-id`, `x-phone-number`)
-5. DB session lookup by `call_id`
+### Extraction priority in `get_call_metadata()`
+
+| Priority | Source | Notes |
+|---|---|---|
+| 1 | `payload.call.from_number` | Only works on webhook events, never on tool calls |
+| 2 | `payload.phone_number` or `payload.args.phone_number` | Used by local harness tests |
+| 3 | Request headers: `x-retell-call-id`, `x-call-id`, `retell-call-id`, `call-id` | Retell may send call ID as a header |
+| 4 | Request headers: `x-retell-from-number`, `x-phone-number`, `x-from-number` | Retell may send phone as a header |
+| 5 | **DB lookup by `call_id`** | Most reliable for live Retell calls — webhook stores `phone → call_id` before tools run |
+| 6 | Most recent active `CallSession` | Last-resort fallback if `call_id` is also missing |
+
+Header logging was added (`logger.info("[get_call_metadata] Headers received: ...")`) so the next live call will reveal the exact header names Retell sends, allowing future refinement.
+
+---
+
+## 4. Payload `args` Wrapping (Tool Argument Format)
+
+Retell wraps all custom tool arguments inside an `args` key:
+
+```json
+{
+  "args": {
+    "specialty": "General Medicine",
+    "clinic_id": 2
+  },
+  "execution_message": "Let me check..."
+}
+```
+
+All FastAPI request models include `Optional[Dict[str, Any]] args`. Every endpoint reads top-level fields first, then falls back to `payload.args`, making the backend compatible with both Retell live and the flat-JSON local evaluation harness.
 
 ---
 
@@ -155,7 +187,30 @@ STEP 10 → Offer further help, then close gracefully
 
 ---
 
-## 6. Booking & Name Capture Enforcement
+## 7. Booking Enforcement: `check_availability` ≠ Booking
+
+### Bug observed in production
+During a live call, the agent:
+1. Called `search_earliest_slot` → got 9 AM slot with Dr. Sneha Rao
+2. Caller requested 5 PM → agent called `check_availability` → returned `is_available: false`
+3. Agent offered 4 PM → caller said "Please" → agent called `check_availability` → returned `is_available: true`
+4. **Agent called `end_call` directly without ever calling `book_appointment`**
+
+Result: the caller heard a confirmation, but **no appointment was written to Supabase** because `book_appointment` was never executed.
+
+### Root cause
+The LLM interpreted `check_availability` returning `is_available: true` as completing the booking intent, and proceeded to close the call. The original prompt had no explicit rule preventing this.
+
+### Fix applied
+Two prompt rules were added (Rules 9 and 10):
+- **Rule 9:** `check_availability` is NOT a booking. After caller confirms the slot, `book_appointment` MUST be called.
+- **Rule 10:** Do not call `end_call` until `book_appointment` has returned `success: true`.
+
+The `check_availability` and `book_appointment` tool sections in the prompt were also updated with **CRITICAL** labels making this distinction explicit.
+
+---
+
+## 8. Booking & Name Capture Enforcement
 
 - Agent **must** collect `first_name` + `last_name` verbally before calling `book_appointment`
 - Even for `returning_patient` — the backend may have their name but the prompt still requires verbal confirmation for security
@@ -164,7 +219,7 @@ STEP 10 → Offer further help, then close gracefully
 
 ---
 
-## 7. Bilingual / Hinglish Code-Switching
+## 9. Bilingual / Hinglish Code-Switching
 
 - The agent uses GPT-4o's native multilingual token space — no translation middleware
 - Prompt instructs: *match the caller's language*. Caller speaks Hindi → respond in Hinglish
@@ -173,7 +228,7 @@ STEP 10 → Offer further help, then close gracefully
 
 ---
 
-## 8. Late Fee Logic (Rescheduling & Cancellation)
+## 10. Late Fee Logic (Rescheduling & Cancellation)
 
 - **Default behaviour:** The agent never mentions fees unless triggered
 - **Backend trigger:** `reschedule_appointment` and `cancel_appointment` return `fee_applies: true` + `fee_amount` when the change is made within 24 hours of the appointment
@@ -184,7 +239,7 @@ STEP 10 → Offer further help, then close gracefully
 
 ---
 
-## 9. Redundancy Prevention
+## 11. Redundancy Prevention
 
 - Prompt rule: *"Never repeat a question the caller has already answered"*
 - If the caller provides multiple details in one sentence (e.g., *"Tomorrow afternoon with Dr. Ramesh"*), the agent maps all of them to the tool call directly — no intermediate confirmation of known parameters
