@@ -18,3 +18,7 @@ clinic.db
 
 # Environment variables
 .env
+
+# Raw prompt files for email attachment
+SYSTEM_PROMPT.txt
+PROMPT_LOGIC.txt
