@@ -148,15 +148,20 @@ async def get_call_metadata(request: Request, payload: Optional[Any] = None, db:
                 if phone_number == "unknown_phone" and session.phone_number:
                     phone_number = session.phone_number
                     logger.info(f"[get_call_metadata] phone resolved from DB session by call_id: {phone_number}")
-        # If call_id also unknown, check all active sessions (best effort)
+        # If call_id also unknown, check all active sessions created in last 60 seconds (best effort)
+        # NOTE: We restrict to 60 seconds to avoid picking up stale harness/test sessions
         if call_id == "unknown_call" and phone_number == "unknown_phone":
+            sixty_seconds_ago = datetime.datetime.utcnow() - datetime.timedelta(seconds=60)
             recent = db.query(CallSession).filter(
-                CallSession.is_active == 1
+                CallSession.is_active == 1,
+                CallSession.created_at >= sixty_seconds_ago
             ).order_by(CallSession.updated_at.desc()).first()
             if recent:
                 call_id = recent.call_id
                 phone_number = recent.phone_number
-                logger.info(f"[get_call_metadata] Fallback: using most recent active session call_id={call_id} phone={phone_number}")
+                logger.info(f"[get_call_metadata] Fallback: using recent session (within 60s) call_id={call_id} phone={phone_number}")
+            else:
+                logger.warning("[get_call_metadata] No recent active session found. Phone will remain unknown.")
             
     logger.info(f"[get_call_metadata] Resolved call_id={call_id} phone_number={phone_number}")
     return call_id, phone_number
@@ -220,9 +225,12 @@ async def identify_caller(
     # Use phone number from body parameter or fallback to request metadata
     phone = phone or req_phone
     if not phone or phone == "unknown_phone":
+        # Cannot identify caller — return new_patient so agent greets and asks for name
+        # (never ask for phone number — that is not a supported flow)
+        logger.warning("[identify_caller] Phone number could not be resolved. Treating as new_patient.")
         return {
-            "status": "unknown_phone",
-            "message": "I could not automatically detect your phone number. Could you please tell me your phone number?"
+            "status": "new_patient",
+            "message": "Hello! Welcome to Aarohan Clinics. I couldn't automatically pull up your details. Could I start by getting your full name — first and last?"
         }
         
     logger.info(f"Identifying caller for phone: {phone}")
