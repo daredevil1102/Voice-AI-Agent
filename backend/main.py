@@ -40,40 +40,47 @@ class RetellCallInfo(BaseModel):
 
 class IdentifyCallerRequest(BaseModel):
     phone_number: Optional[str] = None
+    args: Optional[Dict[str, Any]] = None
     call: Optional[RetellCallInfo] = None
 
 class GetPractitionersRequest(BaseModel):
     specialty: Optional[str] = None
     clinic_id: Optional[int] = None
+    args: Optional[Dict[str, Any]] = None
     call: Optional[RetellCallInfo] = None
 
 class CheckAvailabilityRequest(BaseModel):
-    practitioner_id: int
-    start_time: str
+    practitioner_id: Optional[int] = None
+    start_time: Optional[str] = None
+    args: Optional[Dict[str, Any]] = None
     call: Optional[RetellCallInfo] = None
 
 class SearchEarliestSlotRequest(BaseModel):
     specialty: Optional[str] = None
     clinic_id: Optional[int] = None
     start_from: Optional[str] = None
+    args: Optional[Dict[str, Any]] = None
     call: Optional[RetellCallInfo] = None
 
 class BookAppointmentRequest(BaseModel):
-    first_name: str
-    last_name: str
-    practitioner_id: int
-    clinic_id: int
-    start_time: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    practitioner_id: Optional[int] = None
+    clinic_id: Optional[int] = None
+    start_time: Optional[str] = None
     idempotency_key: Optional[str] = None
+    args: Optional[Dict[str, Any]] = None
     call: Optional[RetellCallInfo] = None
 
 class RescheduleAppointmentRequest(BaseModel):
-    appointment_id: int
-    new_start_time: str
+    appointment_id: Optional[int] = None
+    new_start_time: Optional[str] = None
+    args: Optional[Dict[str, Any]] = None
     call: Optional[RetellCallInfo] = None
 
 class CancelAppointmentRequest(BaseModel):
-    appointment_id: int
+    appointment_id: Optional[int] = None
+    args: Optional[Dict[str, Any]] = None
     call: Optional[RetellCallInfo] = None
 
 
@@ -101,6 +108,15 @@ async def get_call_metadata(request: Request, payload: Optional[Any] = None, db:
             if isinstance(call_data, dict):
                 call_id = call_data.get("call_id", call_id) or call_id
                 phone_number = call_data.get("from_number", phone_number) or phone_number
+        
+        # Check for phone number inside args if still unknown
+        if phone_number == "unknown_phone":
+            if hasattr(payload, "phone_number") and payload.phone_number:
+                phone_number = payload.phone_number
+            elif hasattr(payload, "args") and payload.args and isinstance(payload.args, dict):
+                phone_number = payload.args.get("phone_number", phone_number)
+            elif isinstance(payload, dict):
+                phone_number = payload.get("phone_number") or payload.get("args", {}).get("phone_number", phone_number)
         
     # 2. Fallback to headers (case-insensitive check)
     h_call_id = request.headers.get("x-retell-call-id") or request.headers.get("x-call-id") or request.headers.get("X-Call-Id")
@@ -172,6 +188,8 @@ async def identify_caller(
     phone = None
     if payload:
         phone = payload.phone_number
+        if not phone and payload.args:
+            phone = payload.args.get("phone_number")
         
     # Use phone number from body parameter or fallback to request metadata
     phone = phone or req_phone
@@ -312,8 +330,15 @@ def list_practitioners(specialty: Optional[str] = None, clinic_id: Optional[int]
 @app.post("/tools/get_practitioners")
 def get_practitioners_tool(payload: Optional[GetPractitionersRequest] = None, db: Session = Depends(get_db)):
     """List practitioners filtered by specialty or clinic for Retell custom function."""
-    specialty = payload.specialty if payload else None
-    clinic_id = payload.clinic_id if payload else None
+    specialty = None
+    clinic_id = None
+    if payload:
+        specialty = payload.specialty
+        clinic_id = payload.clinic_id
+        if payload.args:
+            specialty = specialty or payload.args.get("specialty")
+            clinic_id = clinic_id or payload.args.get("clinic_id")
+            
     practitioners = services.get_practitioners_by_specialty(db, specialty, clinic_id)
     return [
         {
@@ -338,6 +363,12 @@ async def check_availability(
     req_call_id, req_phone = await get_call_metadata(request, payload, db)
     practitioner_id = payload.practitioner_id
     start_time = payload.start_time
+    if payload.args:
+        practitioner_id = practitioner_id or payload.args.get("practitioner_id")
+        start_time = start_time or payload.args.get("start_time")
+        
+    if practitioner_id is None or start_time is None:
+        raise HTTPException(status_code=400, detail="Missing practitioner_id or start_time.")
     
     try:
         dt = datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
@@ -386,9 +417,17 @@ async def search_earliest_slot(
     """Searches across branches and practitioners to find the earliest slot."""
     req_call_id, req_phone = await get_call_metadata(request, payload, db)
     
-    specialty = payload.specialty if payload else None
-    clinic_id = payload.clinic_id if payload else None
-    start_from = payload.start_from if payload else None
+    specialty = None
+    clinic_id = None
+    start_from = None
+    if payload:
+        specialty = payload.specialty
+        clinic_id = payload.clinic_id
+        start_from = payload.start_from
+        if payload.args:
+            specialty = specialty or payload.args.get("specialty")
+            clinic_id = clinic_id or payload.args.get("clinic_id")
+            start_from = start_from or payload.args.get("start_from")
     
     start_dt = None
     if start_from:
@@ -443,7 +482,15 @@ async def book_appointment(
     start_time = payload.start_time
     idempotency_key = payload.idempotency_key
     
-    if not first_name.strip() or not last_name.strip():
+    if payload.args:
+        first_name = first_name or payload.args.get("first_name")
+        last_name = last_name or payload.args.get("last_name")
+        practitioner_id = practitioner_id or payload.args.get("practitioner_id")
+        clinic_id = clinic_id or payload.args.get("clinic_id")
+        start_time = start_time or payload.args.get("start_time")
+        idempotency_key = idempotency_key or payload.args.get("idempotency_key")
+        
+    if not first_name or not last_name or not first_name.strip() or not last_name.strip():
         raise HTTPException(status_code=400, detail="Booking requires both first and last name.")
 
     try:
@@ -489,6 +536,12 @@ async def reschedule_appointment(
     req_call_id, req_phone = await get_call_metadata(request, payload, db)
     appointment_id = payload.appointment_id
     new_start_time = payload.new_start_time
+    if payload.args:
+        appointment_id = appointment_id or payload.args.get("appointment_id")
+        new_start_time = new_start_time or payload.args.get("new_start_time")
+        
+    if appointment_id is None or new_start_time is None:
+        raise HTTPException(status_code=400, detail="Missing appointment_id or new_start_time.")
     
     try:
         dt = datetime.datetime.fromisoformat(new_start_time.replace("Z", "+00:00")).replace(tzinfo=None)
@@ -523,6 +576,12 @@ async def cancel_appointment(
 ):
     """Cancels an appointment."""
     appointment_id = payload.appointment_id
+    if payload.args:
+        appointment_id = appointment_id or payload.args.get("appointment_id")
+        
+    if appointment_id is None:
+        raise HTTPException(status_code=400, detail="Missing appointment_id.")
+        
     success, fee_applies, fee_amt, status = services.cancel_appointment(db, appointment_id)
     
     if not success:
