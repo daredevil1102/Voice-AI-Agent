@@ -25,6 +25,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+def read_root():
+    return {
+        "status": "online",
+        "message": "Welcome to Aarohan Clinic Voice AI Backend!",
+        "documentation": "/docs"
+    }
+
 # Pydantic Schemas for inputs
 class IdentifyCallerRequest(BaseModel):
     phone_number: Optional[str] = None
