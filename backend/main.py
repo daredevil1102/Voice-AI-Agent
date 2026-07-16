@@ -34,21 +34,29 @@ def read_root():
     }
 
 # Pydantic Schemas for inputs
+class RetellCallInfo(BaseModel):
+    call_id: Optional[str] = None
+    from_number: Optional[str] = None
+
 class IdentifyCallerRequest(BaseModel):
     phone_number: Optional[str] = None
+    call: Optional[RetellCallInfo] = None
 
 class GetPractitionersRequest(BaseModel):
     specialty: Optional[str] = None
     clinic_id: Optional[int] = None
+    call: Optional[RetellCallInfo] = None
 
 class CheckAvailabilityRequest(BaseModel):
     practitioner_id: int
     start_time: str
+    call: Optional[RetellCallInfo] = None
 
 class SearchEarliestSlotRequest(BaseModel):
     specialty: Optional[str] = None
     clinic_id: Optional[int] = None
     start_from: Optional[str] = None
+    call: Optional[RetellCallInfo] = None
 
 class BookAppointmentRequest(BaseModel):
     first_name: str
@@ -57,13 +65,16 @@ class BookAppointmentRequest(BaseModel):
     clinic_id: int
     start_time: str
     idempotency_key: Optional[str] = None
+    call: Optional[RetellCallInfo] = None
 
 class RescheduleAppointmentRequest(BaseModel):
     appointment_id: int
     new_start_time: str
+    call: Optional[RetellCallInfo] = None
 
 class CancelAppointmentRequest(BaseModel):
     appointment_id: int
+    call: Optional[RetellCallInfo] = None
 
 
 @app.on_event("startup")
@@ -73,37 +84,39 @@ def startup_event():
     logger.info("Database initialized successfully.")
 
 # Helper to extract call metadata from Retell request
-async def get_call_metadata(request: Request) -> tuple[str, str]:
+async def get_call_metadata(request: Request, payload: Optional[Any] = None, db: Optional[Session] = None) -> tuple[str, str]:
     """
-    Extracts call_id and phone_number from Retell's request body or headers.
-    Retell payload structure for custom tool calls contains a 'call' object:
-    {
-      "call": {
-        "call_id": "call_abc123",
-        "from_number": "+15550199", ...
-      },
-      "arguments": { ... }
-    }
+    Extracts call_id and phone_number from Retell's request body, headers, or local DB session.
     """
     call_id = "unknown_call"
     phone_number = "unknown_phone"
     
-    try:
-        body = await request.json()
-        if "call" in body and isinstance(body["call"], dict):
-            call_id = body["call"].get("call_id", call_id)
-            phone_number = body["call"].get("from_number", phone_number)
-    except Exception:
-        pass
+    # 1. Try to extract from payload object (Pydantic model)
+    if payload:
+        if hasattr(payload, "call") and payload.call:
+            call_id = getattr(payload.call, "call_id", call_id) or call_id
+            phone_number = getattr(payload.call, "from_number", phone_number) or phone_number
+        elif isinstance(payload, dict):
+            call_data = payload.get("call", {})
+            if isinstance(call_data, dict):
+                call_id = call_data.get("call_id", call_id) or call_id
+                phone_number = call_data.get("from_number", phone_number) or phone_number
         
-    # Fallback to headers
-    x_call_id = request.headers.get("X-Call-Id")
-    if x_call_id:
-        call_id = x_call_id
-    x_phone = request.headers.get("X-Phone-Number")
-    if x_phone:
-        phone_number = x_phone
+    # 2. Fallback to headers (case-insensitive check)
+    h_call_id = request.headers.get("x-retell-call-id") or request.headers.get("x-call-id") or request.headers.get("X-Call-Id")
+    if h_call_id:
+        call_id = h_call_id
         
+    h_phone = request.headers.get("x-phone-number") or request.headers.get("X-Phone-Number")
+    if h_phone:
+        phone_number = h_phone
+        
+    # 3. Fallback to DB session lookup if phone number is not sent in headers
+    if phone_number == "unknown_phone" and call_id != "unknown_call" and db:
+        session = db.query(CallSession).filter(CallSession.call_id == call_id).first()
+        if session and session.phone_number:
+            phone_number = session.phone_number
+            
     return call_id, phone_number
 
 # Webhook for Retell events
@@ -154,7 +167,7 @@ async def identify_caller(
     Identifies if the caller is new, returning, or returning after a dropped call.
     Also handles family line disambiguation.
     """
-    req_call_id, req_phone = await get_call_metadata(request)
+    req_call_id, req_phone = await get_call_metadata(request, payload, db)
     
     phone = None
     if payload:
@@ -172,12 +185,18 @@ async def identify_caller(
 
     # 1. Check for a dropped call recovery (active session in last 10 minutes)
     ten_minutes_ago = datetime.datetime.utcnow() - datetime.timedelta(minutes=10)
-    recent_session = db.query(CallSession).filter(
+    recent_sessions = db.query(CallSession).filter(
         CallSession.phone_number == phone,
         CallSession.is_active == 1,
-        CallSession.updated_at >= ten_minutes_ago,
-        CallSession.context_data != {}
-    ).order_by(CallSession.updated_at.desc()).first()
+        CallSession.updated_at >= ten_minutes_ago
+    ).order_by(CallSession.updated_at.desc()).all()
+
+    # Filter in Python to avoid PostgreSQL json comparison operator issues
+    recent_session = None
+    for s in recent_sessions:
+        if s.context_data and s.context_data != {}:
+            recent_session = s
+            break
 
     # Only trigger recovery if we have actual booking context (start_time or queried_start_time) in progress
     if recent_session and recent_session.context_data and ("queried_start_time" in recent_session.context_data or "start_time" in recent_session.context_data):
@@ -226,13 +245,50 @@ async def identify_caller(
     patient_name = f"{patient.first_name} {patient.last_name}"
     logger.info(f"Returning patient identified: {patient_name}")
     
-    # Save patient context
-    services.update_call_session(db, req_call_id, phone, context_data={"patient_id": patient.id, "patient_name": patient_name})
+    # Retrieve active appointments for this patient
+    appointments = db.query(Appointment).filter(
+        Appointment.patient_id == patient.id,
+        Appointment.status != "cancelled"
+    ).all()
+    
+    appt_list = [
+        {
+            "appointment_id": appt.id,
+            "practitioner_name": appt.practitioner.name,
+            "clinic_name": appt.clinic.name,
+            "start_time": appt.start_time.isoformat(),
+            "status": appt.status
+        }
+        for appt in appointments
+    ]
+    
+    # Save patient context (including active appointments)
+    services.update_call_session(
+        db, 
+        req_call_id, 
+        phone, 
+        context_data={
+            "patient_id": patient.id, 
+            "patient_name": patient_name,
+            "appointments": appt_list
+        }
+    )
+    
+    if appt_list:
+        appt_descriptions = []
+        for a in appt_list:
+            dt = datetime.datetime.fromisoformat(a["start_time"])
+            appt_descriptions.append(f"{a['practitioner_name']} at {a['clinic_name']} on {dt.strftime('%Y-%m-%d')} at {dt.strftime('%I:%M %p')} (Appointment ID: {a['appointment_id']})")
+        appt_msg = "; and ".join(appt_descriptions)
+        message = f"Welcome back, {patient.first_name}! I see you have active appointment(s): {appt_msg}. How can I help you today?"
+    else:
+        message = f"Welcome back, {patient.first_name}! How can I help you today? (Note: If you are booking an appointment, I will still confirm your full name at the end for security.)"
     
     return {
         "status": "returning_patient",
         "patient_name": patient_name,
-        "message": f"Welcome back, {patient.first_name}! How can I help you today? (Note: If you are booking an appointment, I will still confirm your full name at the end for security.)"
+        "appointments": appt_list,
+        "message": message
     }
 
 
@@ -279,7 +335,7 @@ async def check_availability(
     db: Session = Depends(get_db)
 ):
     """Checks if a specific doctor is available at a given time."""
-    req_call_id, req_phone = await get_call_metadata(request)
+    req_call_id, req_phone = await get_call_metadata(request, payload, db)
     practitioner_id = payload.practitioner_id
     start_time = payload.start_time
     
@@ -328,7 +384,7 @@ async def search_earliest_slot(
     db: Session = Depends(get_db)
 ):
     """Searches across branches and practitioners to find the earliest slot."""
-    req_call_id, req_phone = await get_call_metadata(request)
+    req_call_id, req_phone = await get_call_metadata(request, payload, db)
     
     specialty = payload.specialty if payload else None
     clinic_id = payload.clinic_id if payload else None
@@ -379,7 +435,7 @@ async def book_appointment(
     db: Session = Depends(get_db)
 ):
     """Books a new appointment. Verification of full name is required before booking."""
-    req_call_id, req_phone = await get_call_metadata(request)
+    req_call_id, req_phone = await get_call_metadata(request, payload, db)
     first_name = payload.first_name
     last_name = payload.last_name
     practitioner_id = payload.practitioner_id
@@ -430,7 +486,7 @@ async def reschedule_appointment(
     db: Session = Depends(get_db)
 ):
     """Reschedules an existing appointment to a new slot."""
-    req_call_id, req_phone = await get_call_metadata(request)
+    req_call_id, req_phone = await get_call_metadata(request, payload, db)
     appointment_id = payload.appointment_id
     new_start_time = payload.new_start_time
     

@@ -17,29 +17,29 @@ We run multi-turn scripted conversations covering the core scenarios of the Voic
 - **Turns to Completion:** 3
 - **Tool Calls Executed:** 3
 - **Redundant Questions Asked:** 0
-- **Average LLM Generation Latency:** 145.6 ms
-- **Average End-to-End Latency:** 1045.6 ms
+- **Average LLM Generation Latency:** 2352.3 ms
+- **Average End-to-End Latency:** 3252.3 ms
 
 ### Bilingual Triage & Earliest Slot (Hindi/Hinglish) (Hindi)
 - **Turns to Completion:** 3
 - **Tool Calls Executed:** 4
 - **Redundant Questions Asked:** 0
-- **Average LLM Generation Latency:** 147.5 ms
-- **Average End-to-End Latency:** 1047.5 ms
+- **Average LLM Generation Latency:** 1272.7 ms
+- **Average End-to-End Latency:** 2172.7 ms
 
 ### Family Line Disambiguation (English) (English)
 - **Turns to Completion:** 2
 - **Tool Calls Executed:** 1
 - **Redundant Questions Asked:** 0
-- **Average LLM Generation Latency:** 127.7 ms
-- **Average End-to-End Latency:** 1027.7 ms
+- **Average LLM Generation Latency:** 982.7 ms
+- **Average End-to-End Latency:** 1882.7 ms
 
 ### Late Rescheduling with Fee Warning (English) (English)
 - **Turns to Completion:** 1
 - **Tool Calls Executed:** 1
 - **Redundant Questions Asked:** 0
-- **Average LLM Generation Latency:** 133.7 ms
-- **Average End-to-End Latency:** 1033.7 ms
+- **Average LLM Generation Latency:** 1442.7 ms
+- **Average End-to-End Latency:** 2342.7 ms
 
 ---
 
