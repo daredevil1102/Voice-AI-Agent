@@ -106,3 +106,13 @@ Deploy the FastAPI application to a platform of your choice (e.g., Render, Railw
 1. Buy or assign a phone number in the Retell dashboard and link it to your configured agent.
 2. Under the phone number settings, set the **Status Callback URL** (Webhook) to `https://your-deployed-app.com/webhook` to handle start/end callbacks for session tracking.
 3. Call the number to test end-to-end booking!
+
+---
+
+## ⚠️ Known Limitations
+
+1. **Bilingual ASR & Accents under Noise:** While `gpt-4o` handles English-Hindi code-switching exceptionally well, ASR accuracy can degrade when callers speak in heavy background noise, use rare dialect structures, or switch languages at extremely high speeds mid-word.
+2. **Interactive Payment Limitations:** The agent can identify that a late cancellation/reschedule fee of **$25** applies and notify the user, but cannot collect credit card information directly over the call due to PCI compliance restrictions. Instead, it logs the fee for manual staff follow-up.
+3. **Complex Timezone Boundaries:** The system operates on naive UTC/Local datetimes. If patients call from different timezone offsets than the clinic's local timezone, off-hour check calculations could experience shifts without a timezone-aware translation layer.
+4. **Harness Simulation Scope:** The evaluation harness runs in a textual mock mode when no `OPENAI_API_KEY` is provided. The mock mode uses keyword matching rather than conversational semantic reasoning to route the simulated turns, which works for scripting but does not replace human testing.
+
